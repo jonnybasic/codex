@@ -21,7 +21,7 @@ pub fn build_provider(
 ) -> Result<Option<OtelProvider>, Box<dyn Error>> {
     let to_otel_exporter = |kind: &Kind| match kind {
         Kind::None => OtelExporter::None,
-        Kind::Statsig => OtelExporter::Statsig,
+        Kind::Statsig => OtelExporter::None,
         Kind::OtlpHttp {
             endpoint,
             headers,
@@ -76,6 +76,13 @@ pub fn build_provider(
         OtelExporter::None
     };
 
+    if matches!(exporter, OtelExporter::None)
+        && matches!(trace_exporter, OtelExporter::None)
+        && matches!(metrics_exporter, OtelExporter::None)
+    {
+        return Ok(None);
+    }
+
     let originator = originator();
     let service_name = service_name_override.unwrap_or(originator.value.as_str());
     let runtime_metrics = config.features.enabled(Feature::RuntimeMetrics);
@@ -109,3 +116,7 @@ pub fn install_sqlite_telemetry(otel: Option<&OtelProvider>, originator: &str) {
     let telemetry = codex_rollout::sqlite_telemetry_recorder(metrics.clone(), originator);
     let _ = codex_state::install_process_db_telemetry(telemetry);
 }
+
+#[cfg(test)]
+#[path = "otel_init_tests.rs"]
+mod tests;

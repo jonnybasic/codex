@@ -93,7 +93,9 @@ use codex_model_provider::ProviderCapabilities;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
+use codex_model_provider_info::WireApi;
 use codex_model_provider_info::built_in_model_providers;
+use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_model_provider_info::merge_configured_model_providers;
 use codex_models_manager::ModelsManagerConfig;
 use codex_prompts::ResolvedModelMessages;
@@ -3210,7 +3212,7 @@ fn validate_multi_agent_v2_tool_namespace(namespace: Option<&str>) -> std::io::R
 
 impl Config {
     #[cfg(test)]
-    async fn load_from_base_config_with_overrides(
+    pub(crate) async fn load_from_base_config_with_overrides(
         cfg: ConfigToml,
         overrides: ConfigOverrides,
         codex_home: AbsolutePathBuf,
@@ -3813,21 +3815,28 @@ impl Config {
             merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
 
-        let model_provider_id = config_layer_stack.required_model_provider().map(str::to_string)
+        let explicit_provider_id = config_layer_stack
+            .required_model_provider()
+            .map(str::to_string)
             .or(model_provider)
-            .or(cfg.model_provider)
+            .or(cfg.model_provider);
+        let model_provider_id = explicit_provider_id
+            .clone()
             .unwrap_or_else(|| "openai".to_string());
-        let model_provider = model_providers
-            .get(&model_provider_id)
-            .ok_or_else(|| {
+        let model_provider = match model_providers.get(&model_provider_id) {
+            Some(provider) => provider.clone(),
+            None if explicit_provider_id.is_none() || model_provider_id == "openai" => {
+                create_oss_provider_with_base_url("http://127.0.0.1:8080/v1", WireApi::Responses)
+            }
+            None => {
                 let message = if model_provider_id == LEGACY_OLLAMA_CHAT_PROVIDER_ID {
                     OLLAMA_CHAT_PROVIDER_REMOVED_ERROR.to_string()
                 } else {
                     format!("Model provider `{model_provider_id}` not found")
                 };
-                std::io::Error::new(std::io::ErrorKind::NotFound, message)
-            })?
-            .clone();
+                return Err(std::io::Error::new(std::io::ErrorKind::NotFound, message));
+            }
+        };
 
         let shell_environment_policy = ShellEnvironmentPolicy::from(cfg.shell_environment_policy);
         let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);
@@ -4070,7 +4079,7 @@ impl Config {
 
         let review_model = override_review_model.or(cfg.review_model);
 
-        let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
+        let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(false);
         let model_catalog = load_model_catalog(cfg.model_catalog_json.clone())?;
 
         let log_dir = cfg

@@ -2265,6 +2265,9 @@ impl ModelClientSession {
                 )
                 .await
             }
+            WireApi::Chat => Err(CodexErr::Fatal(
+                "WireApi::Chat streaming engine will be implemented in Phase 4.".to_string(),
+            )),
         }
     }
 
