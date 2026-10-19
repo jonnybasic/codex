@@ -540,10 +540,116 @@ impl SessionConfiguration {
                 environments.environments.as_slice()
             });
         super::environment::validate_environment_configs(next_environments)?;
+        let mut step_update = updates.step_settings.clone();
+        let raw_model = step_update
+            .collaboration_mode
+            .as_ref()
+            .map(|c| c.model().to_string())
+            .or_else(|| step_update.model.clone());
+        let resolved_model = raw_model.as_deref().and_then(|m| {
+            let base = m.split(':').next().unwrap_or(m);
+            next_configuration
+                .original_config_do_not_use
+                .models
+                .contains_key(base)
+                .then(|| {
+                    next_configuration
+                        .original_config_do_not_use
+                        .resolve_effective_model(m)
+                })
+        });
+
+        if let Some(ref resolved) = resolved_model {
+            if let Some(cw) = resolved
+                .context_window
+                .and_then(|cw| i64::try_from(cw).ok())
+            {
+                next_configuration.model_info_overrides.context_window = Some(cw);
+            }
+            if step_update.effort.is_none()
+                && let Some(eff) = resolved.reasoning_effort.as_deref().and_then(|s| {
+                    s.parse::<codex_protocol::openai_models::ReasoningEffort>()
+                        .ok()
+                })
+            {
+                step_update.effort = Some(Some(eff.clone()));
+                if let Some(ref mut cm) = step_update.collaboration_mode {
+                    cm.settings.reasoning_effort = Some(eff);
+                }
+            }
+            if let Some(ref mut cm) = step_update.collaboration_mode {
+                cm.settings.model = resolved.wire_model.clone();
+            } else if step_update.model.is_some() {
+                step_update.model = Some(resolved.wire_model.clone());
+            }
+        }
+
+        let target_provider_id = updates
+            .provider
+            .clone()
+            .or_else(|| resolved_model.as_ref().map(|r| r.provider.clone()));
+        if target_provider_id.is_some() || resolved_model.is_some() {
+            let eff_prov_id = target_provider_id.unwrap_or_else(|| {
+                next_configuration
+                    .original_config_do_not_use
+                    .model_provider_id
+                    .clone()
+            });
+            let mut cfg = (*next_configuration.original_config_do_not_use).clone();
+            if let Some(cw) = resolved_model
+                .as_ref()
+                .and_then(|r| r.context_window)
+                .and_then(|cw| i64::try_from(cw).ok())
+            {
+                cfg.model_context_window = Some(cw);
+            }
+            if let Some(mut prov_info) =
+                cfg.model_providers.get(&eff_prov_id).cloned().or_else(|| {
+                    (eff_prov_id == cfg.model_provider_id)
+                        .then(|| next_configuration.provider.info().clone())
+                })
+            {
+                if let Some(ref res) = resolved_model {
+                    let spec = cfg.models.get(&res.base_model);
+                    let var = res
+                        .variant
+                        .as_deref()
+                        .and_then(|v| spec.and_then(|s| s.variants.get(v)));
+                    if let Some(streaming) = var
+                        .and_then(|v| v.supports_streaming)
+                        .or_else(|| spec.and_then(|s| s.supports_streaming))
+                    {
+                        prov_info.supports_streaming = streaming;
+                    }
+                    if let Some(wire_api) = var
+                        .and_then(|v| v.wire_api)
+                        .or_else(|| spec.and_then(|s| s.wire_api))
+                    {
+                        prov_info.wire_api = wire_api;
+                    }
+                    if !res.http_headers.is_empty() {
+                        prov_info
+                            .http_headers
+                            .get_or_insert_with(HashMap::new)
+                            .extend(
+                                res.http_headers
+                                    .iter()
+                                    .map(|(k, v)| (k.clone(), v.clone().into())),
+                            );
+                    }
+                }
+                next_configuration.provider =
+                    create_model_provider(prov_info.clone(), self.provider.auth_manager());
+                cfg.model_provider_id = eff_prov_id;
+                cfg.model_provider = prov_info;
+            }
+            next_configuration.original_config_do_not_use = Arc::new(cfg);
+        }
+
         // Apply step settings last: the proposed permissions and environment
         // selections must be complete before deriving their validation constraints.
         next_configuration.step_settings = Arc::new(self.step_settings.apply(
-            &updates.step_settings,
+            &step_update,
             &next_configuration.step_settings_constraints(next_environments),
         )?);
         Ok(next_configuration)
@@ -595,6 +701,7 @@ pub(crate) struct SessionSettingsCommit {
 #[derive(Default, Clone)]
 pub(crate) struct SessionSettingsUpdate {
     pub(crate) step_settings: StepSettingsUpdate,
+    pub(crate) provider: Option<String>,
     pub(crate) environments: Option<TurnEnvironmentSelections>,
     pub(crate) runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
     pub(crate) profile_workspace_roots: Option<Vec<ProfileWorkspaceRoot>>,

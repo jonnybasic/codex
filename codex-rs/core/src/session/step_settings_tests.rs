@@ -485,3 +485,66 @@ async fn model_resolution_preserves_startup_overrides_and_instruction_provenance
         );
     }
 }
+
+#[tokio::test]
+async fn cross_provider_hot_swap_applies_model_spec_and_variant_overrides() {
+    let mut configuration = make_session_configuration_for_tests().await;
+    let mut variants = std::collections::BTreeMap::new();
+    variants.insert(
+        "high".to_string(),
+        codex_config::ModelVariant {
+            model: None,
+            reasoning_effort: Some("high".to_string()),
+            supports_streaming: Some(false),
+            wire_api: None,
+            http_headers: None,
+        },
+    );
+    let cfg = Arc::make_mut(&mut configuration.original_config_do_not_use);
+    cfg.models.insert(
+        "gemini-2.5-pro".to_string(),
+        codex_config::ModelSpec {
+            provider: "google".to_string(),
+            model: Some("gemini-2.5-pro-002".to_string()),
+            context_window: Some(1_000_000),
+            supports_streaming: Some(true),
+            reasoning_effort: Some("medium".to_string()),
+            wire_api: Some(codex_model_provider_info::WireApi::Chat),
+            http_headers: None,
+            variants,
+        },
+    );
+
+    let updated = configuration
+        .apply(
+            &SessionSettingsUpdate {
+                step_settings: StepSettingsUpdate {
+                    model: Some("gemini-2.5-pro:high".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            &[],
+        )
+        .expect("cross-provider model variant update should succeed");
+
+    assert_eq!(
+        updated.step_settings.collaboration_mode.model(),
+        "gemini-2.5-pro-002"
+    );
+    assert_eq!(
+        updated.step_settings.collaboration_mode.reasoning_effort(),
+        Some(ReasoningEffort::High)
+    );
+    assert_eq!(updated.model_info_overrides.context_window, Some(1_000_000));
+    assert_eq!(
+        updated.original_config_do_not_use.model_provider_id,
+        "google"
+    );
+    assert_eq!(updated.provider.info().name, "Google Gemini (AI Studio)");
+    assert!(!updated.provider.info().supports_streaming);
+    assert_eq!(
+        updated.provider.info().wire_api,
+        codex_model_provider_info::WireApi::Chat
+    );
+}

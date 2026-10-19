@@ -232,6 +232,7 @@ impl Session {
         update: TurnSettingsUpdate,
     ) -> TurnSettingsUpdateOutcome {
         let updates_model_settings = update.model.is_some()
+            || update.provider.is_some()
             || update.effort.is_some()
             || update.summary.is_some()
             || update.service_tier.is_some();
@@ -268,15 +269,35 @@ impl Session {
             approvals_reviewer,
             environments,
             model,
+            provider,
             effort,
             summary,
             service_tier,
         } = update;
+        let resolved_model = model.as_deref().and_then(|m| {
+            let base = m.split(':').next().unwrap_or(m);
+            turn_context
+                .config
+                .models
+                .contains_key(base)
+                .then(|| turn_context.config.resolve_effective_model(m))
+        });
+        let effective_model = resolved_model
+            .as_ref()
+            .map(|r| r.wire_model.clone())
+            .or(model);
+        let effective_effort = effort.or_else(|| {
+            resolved_model
+                .as_ref()
+                .and_then(|r| r.reasoning_effort.as_deref()?.parse().ok().map(Some))
+        });
+        let target_provider_id =
+            provider.or_else(|| resolved_model.as_ref().map(|r| r.provider.clone()));
         let updates_step_settings = updates_model_settings || approvals_reviewer.is_some();
         let update = StepSettingsUpdate {
             approvals_reviewer,
-            model,
-            effort,
+            model: effective_model,
+            effort: effective_effort,
             reasoning_summary: summary,
             service_tier,
             ..Default::default()
@@ -362,6 +383,50 @@ impl Session {
 
         // Save changed settings first. The manager then installs any new environment list before
         // waking waiting work. The next step cannot read either until we release this lock.
+        if let Some(prov_id) = target_provider_id
+            && let Some(mut prov_info) = state
+                .session_configuration
+                .original_config_do_not_use
+                .model_providers
+                .get(&prov_id)
+                .cloned()
+        {
+            if let Some(ref res) = resolved_model {
+                let cfg = &state.session_configuration.original_config_do_not_use;
+                let spec = cfg.models.get(&res.base_model);
+                let var = res
+                    .variant
+                    .as_deref()
+                    .and_then(|v| spec.and_then(|s| s.variants.get(v)));
+                if let Some(streaming) = var
+                    .and_then(|v| v.supports_streaming)
+                    .or_else(|| spec.and_then(|s| s.supports_streaming))
+                {
+                    prov_info.supports_streaming = streaming;
+                }
+                if let Some(wire_api) = var
+                    .and_then(|v| v.wire_api)
+                    .or_else(|| spec.and_then(|s| s.wire_api))
+                {
+                    prov_info.wire_api = wire_api;
+                }
+                if !res.http_headers.is_empty() {
+                    prov_info
+                        .http_headers
+                        .get_or_insert_with(std::collections::HashMap::new)
+                        .extend(
+                            res.http_headers
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone().into())),
+                        );
+                }
+            }
+            let new_provider = codex_model_provider::create_model_provider(
+                prov_info,
+                state.session_configuration.provider.auth_manager(),
+            );
+            self.services.model_client.set_provider(new_provider);
+        }
         if let Some(settings) = updated_settings {
             task.turn_context
                 .next_step_settings

@@ -485,6 +485,7 @@ pub struct TurnSettingsUpdate {
     /// which can be pending. An already-selected environment with its own cannot switch back.
     pub environments: Option<Vec<TurnEnvironmentSelection>>,
     pub model: Option<String>,
+    pub provider: Option<String>,
     /// `None` preserves the selection; `Some(None)` clears it.
     pub effort: Option<Option<ReasoningEffortConfig>>,
     pub summary: Option<ReasoningSummaryConfig>,
@@ -541,6 +542,9 @@ pub struct ThreadSettingsOverrides {
 
     /// Updated model slug. When set, the model info is derived automatically.
     pub model: Option<String>,
+
+    /// Updated model provider ID override.
+    pub provider: Option<String>,
 
     /// Updated reasoning effort (honored only for reasoning-capable models).
     ///

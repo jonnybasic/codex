@@ -389,7 +389,8 @@ impl ModelClientSession {
         model_info: &ModelInfo,
         effort: Option<ReasoningEffortConfig>,
     ) -> Result<ResponseStream> {
-        let provider = self.client.state.provider.info();
+        let provider_handle = self.client.state.provider();
+        let provider = provider_handle.info();
         let base_url = provider
             .base_url
             .as_deref()

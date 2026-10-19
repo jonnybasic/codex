@@ -229,6 +229,7 @@ impl TurnRequestProcessor {
                         .map(codex_app_server_protocol::ApprovalsReviewer::to_core),
                     environments: None,
                     model: params.model,
+                    provider: None,
                     // Match thread/settings/update: public null does not clear effort.
                     effort: params.effort.map(Some),
                     summary: params.summary,
@@ -885,6 +886,7 @@ impl TurnRequestProcessor {
                     profile_workspace_roots: profile_workspace_roots.clone(),
                     windows_sandbox_level: None,
                     model: model.clone(),
+                    provider: None,
                     effort: effort.clone(),
                     summary,
                     service_tier: service_tier.clone(),
@@ -909,6 +911,7 @@ impl TurnRequestProcessor {
             active_permission_profile,
             windows_sandbox_level: None,
             model,
+            provider: None,
             effort,
             summary,
             service_tier,
