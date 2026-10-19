@@ -19,12 +19,15 @@ use codex_config::FeatureRequirementsToml;
 use codex_config::ManagedAuthPolicy;
 use codex_config::McpEnterpriseManagedAuthConfig;
 use codex_config::McpServerRequirement;
+use codex_config::ModelSpec;
 use codex_config::PluginRequirementsToml;
 use codex_config::ProfileV2Name;
 use codex_config::ResidencyRequirement;
+use codex_config::ResolvedModelConfig;
 use codex_config::SandboxModeRequirement;
 use codex_config::Sourced;
 use codex_config::ThreadConfigLoader;
+use codex_config::TuiModelEntry;
 use codex_config::config_toml::CircuitBreakAction;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
@@ -649,6 +652,9 @@ pub struct Config {
 
     /// Info needed to make an API request to the model.
     pub model_provider: ModelProviderInfo,
+
+    /// OpenCode-compatible model specifications and variant catalog.
+    pub models: BTreeMap<String, ModelSpec>,
 
     /// Deprecated: `friendly` and `pragmatic` no longer select a style.
     pub personality: Option<Personality>,
@@ -1571,6 +1577,21 @@ impl ConfigBuilder {
 }
 
 impl Config {
+    /// Resolves an effective model configuration from the catalog given a raw model string.
+    pub fn resolve_effective_model(&self, raw_model: &str) -> ResolvedModelConfig {
+        codex_config::resolve_effective_model(&self.models, raw_model)
+    }
+
+    /// Builds TUI model catalog entries for base models and variants.
+    pub fn build_tui_model_catalog(&self) -> Vec<TuiModelEntry> {
+        codex_config::build_tui_model_catalog(&self.models)
+    }
+
+    /// Finds the next variant for the currently active model (powering Ctrl+T cycling).
+    pub fn next_variant_for_model(&self, current_model: &str) -> Option<TuiModelEntry> {
+        codex_config::next_variant_for_model(&self.models, current_model)
+    }
+
     pub fn sqlite_config(&self) -> &codex_state::SqliteConfig {
         &self.sqlite
     }
@@ -4296,6 +4317,7 @@ impl Config {
                 .unwrap_or_default(),
             model_provider_id,
             model_provider,
+            models: cfg.models,
             cwd: resolved_cwd,
             workspace_roots: workspace_roots.clone(),
             workspace_roots_explicit,

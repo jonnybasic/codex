@@ -13475,3 +13475,63 @@ fn sqlite_home_env_conflict_reports_an_override() -> std::io::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_config_models_catalog_and_variant_cycling() -> std::io::Result<()> {
+    let mut fixture = create_test_fixture()?;
+    fixture.cfg = toml::from_str(
+        r#"
+[models."gemini-2.5-pro"]
+provider = "google"
+model = "gemini-2.5-pro-preview"
+context_window = 1000000
+supports_streaming = true
+reasoning_effort = "medium"
+
+[models."gemini-2.5-pro".variants.high]
+reasoning_effort = "high"
+
+[models.local-gemma]
+provider = "local"
+model = "gemma-4-12b"
+context_window = 128000
+"#,
+    )
+    .expect("TOML deserialization should succeed");
+
+    let config = Config::load_from_base_config_with_overrides(
+        fixture.cfg.clone(),
+        ConfigOverrides {
+            cwd: Some(fixture.cwd_path()),
+            ..Default::default()
+        },
+        fixture.codex_home(),
+    )
+    .await?;
+
+    assert_eq!(config.models.len(), 2);
+
+    let resolved = config.resolve_effective_model("gemini-2.5-pro:high");
+    assert_eq!(resolved.identifier, "gemini-2.5-pro:high");
+    assert_eq!(resolved.base_model, "gemini-2.5-pro");
+    assert_eq!(resolved.variant.as_deref(), Some("high"));
+    assert_eq!(resolved.provider, "google");
+    assert_eq!(resolved.wire_model, "gemini-2.5-pro-preview");
+    assert_eq!(resolved.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(resolved.context_window, Some(1000000));
+
+    let catalog = config.build_tui_model_catalog();
+    assert_eq!(catalog.len(), 3); // gemini-2.5-pro, gemini-2.5-pro:high, local-gemma
+
+    let cycled = config
+        .next_variant_for_model("gemini-2.5-pro")
+        .expect("should cycle to high variant");
+    assert_eq!(cycled.id, "gemini-2.5-pro:high");
+
+    let cycled_back = config
+        .next_variant_for_model("gemini-2.5-pro:high")
+        .expect("should wrap around to base model");
+    assert_eq!(cycled_back.id, "gemini-2.5-pro");
+
+    Ok(())
+}

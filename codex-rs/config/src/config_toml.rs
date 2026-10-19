@@ -327,6 +327,10 @@ pub struct ConfigToml {
     #[serde(default, deserialize_with = "deserialize_model_providers")]
     pub model_providers: HashMap<String, ModelProviderInfo>,
 
+    /// OpenCode-compatible model specifications and variant catalog.
+    #[serde(default)]
+    pub models: BTreeMap<String, crate::model_spec::ModelSpec>,
+
     /// Maximum total bytes of project instruction content across all selected environments.
     #[serde(default = "default_project_doc_max_bytes")]
     pub project_doc_max_bytes: Option<usize>,
