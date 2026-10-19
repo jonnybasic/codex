@@ -566,7 +566,7 @@ impl SessionConfiguration {
             {
                 next_configuration.model_info_overrides.context_window = Some(cw);
             }
-            if step_update.effort.is_none()
+            if (step_update.effort.is_none() || resolved.variant.is_some())
                 && let Some(eff) = resolved.reasoning_effort.as_deref().and_then(|s| {
                     s.parse::<codex_protocol::openai_models::ReasoningEffort>()
                         .ok()

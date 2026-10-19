@@ -121,21 +121,29 @@ fn test_build_tui_model_catalog_and_variant_cycling() {
     variants.insert(
         "high".to_string(),
         ModelVariant {
+            name: None,
             model: None,
+            max_input_tokens: None,
+            max_output_tokens: Some(65536),
             reasoning_effort: Some("high".to_string()),
             supports_streaming: None,
             wire_api: None,
             http_headers: None,
+            extra_body: None,
         },
     );
     variants.insert(
-        "low".to_string(),
+        "fast".to_string(),
         ModelVariant {
+            name: None,
             model: None,
+            max_input_tokens: None,
+            max_output_tokens: Some(16384),
             reasoning_effort: Some("low".to_string()),
             supports_streaming: None,
             wire_api: None,
             http_headers: None,
+            extra_body: None,
         },
     );
 
@@ -143,46 +151,65 @@ fn test_build_tui_model_catalog_and_variant_cycling() {
     catalog.insert(
         "gemini-2.5-pro".to_string(),
         ModelSpec {
+            name: Some("Gemini 2.5 Pro".to_string()),
             provider: "google".to_string(),
             model: None,
             context_window: Some(1000000),
+            max_input_tokens: Some(1048576),
+            max_output_tokens: Some(65536),
             supports_streaming: Some(true),
             reasoning_effort: Some("medium".to_string()),
             wire_api: Some(WireApi::Chat),
             http_headers: None,
+            extra_body: None,
             variants,
         },
     );
     catalog.insert(
         "gemma-4-12b".to_string(),
         ModelSpec {
+            name: Some("Gemma 4 12B".to_string()),
             provider: "local".to_string(),
             model: None,
             context_window: Some(128000),
+            max_input_tokens: None,
+            max_output_tokens: None,
             supports_streaming: Some(true),
             reasoning_effort: None,
             wire_api: Some(WireApi::Chat),
             http_headers: None,
+            extra_body: None,
             variants: BTreeMap::new(),
         },
     );
 
     let tui_entries = build_tui_model_catalog(&catalog);
-    assert_eq!(tui_entries.len(), 4); // gemini-2.5-pro, gemini-2.5-pro:high, gemini-2.5-pro:low, gemma-4-12b
+    assert_eq!(tui_entries.len(), 4); // gemini-2.5-pro, gemini-2.5-pro:fast, gemini-2.5-pro:high, gemma-4-12b
 
-    // Test cycling for gemini-2.5-pro:
-    // Base -> high -> low -> Base
+    // Resolve by reasoning_effort alias (`:low` matches `.variants.fast`)
+    let resolved_low = resolve_effective_model(&catalog, "gemini-2.5-pro:low");
+    assert_eq!(resolved_low.identifier, "gemini-2.5-pro:fast");
+    assert_eq!(resolved_low.reasoning_effort.as_deref(), Some("low"));
+
+    // Test cycling for gemini-2.5-pro (BTreeMap keys: "fast", "high"):
+    // Base -> fast -> high -> Base
     let cycle1 =
         next_variant_for_model(&catalog, "gemini-2.5-pro").expect("should cycle to first variant");
-    assert_eq!(cycle1.id, "gemini-2.5-pro:high");
+    assert_eq!(cycle1.id, "gemini-2.5-pro:fast");
 
-    let cycle2 = next_variant_for_model(&catalog, "gemini-2.5-pro:high")
+    let cycle2 = next_variant_for_model(&catalog, "gemini-2.5-pro:fast")
         .expect("should cycle to second variant");
-    assert_eq!(cycle2.id, "gemini-2.5-pro:low");
+    assert_eq!(cycle2.id, "gemini-2.5-pro:high");
 
-    let cycle3 =
-        next_variant_for_model(&catalog, "gemini-2.5-pro:low").expect("should wrap around to base");
+    let cycle3 = next_variant_for_model(&catalog, "gemini-2.5-pro:high")
+        .expect("should wrap around to base");
     assert_eq!(cycle3.id, "gemini-2.5-pro");
+
+    // Test cycling when session holds wire model + current effort ("low" -> fast -> next is high)
+    let cycle_by_effort =
+        next_variant_for_model_and_effort(&catalog, "gemini-2.5-pro", Some("low"))
+            .expect("should cycle from fast(low) to high");
+    assert_eq!(cycle_by_effort.id, "gemini-2.5-pro:high");
 
     // Test model without variants
     assert_eq!(next_variant_for_model(&catalog, "gemma-4-12b"), None);

@@ -543,9 +543,37 @@ impl App {
             return;
         }
 
+        if app_keymap_shortcuts_available
+            && !self.config.models.is_empty()
+            && crate::key_hint::ctrl(KeyCode::Char('t')).is_press(key_event)
+        {
+            let current_model = self.chat_widget.current_model().to_string();
+            let current_effort = self
+                .chat_widget
+                .effective_reasoning_effort()
+                .map(|eff| eff.to_string().to_lowercase());
+            if let Some(next_entry) = codex_config::next_variant_for_model_and_effort(
+                &self.config.models,
+                &current_model,
+                current_effort.as_deref(),
+            ) {
+                let effort = next_entry
+                    .reasoning_effort
+                    .as_deref()
+                    .and_then(|s| s.parse().ok());
+                self.app_event_tx.send(AppEvent::SelectSessionModel {
+                    model: next_entry.id,
+                    effort,
+                });
+                return;
+            }
+        }
+
         let find_transcript = self.keymap.app.find_transcript.is_pressed(key_event);
         if app_keymap_shortcuts_available
-            && (self.keymap.app.open_transcript.is_pressed(key_event) || find_transcript)
+            && (self.keymap.app.open_transcript.is_pressed(key_event)
+                || crate::key_hint::alt(KeyCode::Char('t')).is_press(key_event)
+                || find_transcript)
         {
             self.scrollback_has_older_history = self
                 .chat_widget

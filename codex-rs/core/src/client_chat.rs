@@ -433,8 +433,12 @@ impl ModelClientSession {
         let tools = convert_tools_to_chat_format(&prompt.tools);
         let supports_streaming = provider.supports_streaming;
 
+        let wire_model = model_info
+            .slug
+            .split_once(':')
+            .map_or(model_info.slug.as_str(), |(base, _)| base);
         let mut payload = json!({
-            "model": model_info.slug,
+            "model": wire_model,
             "messages": messages,
             "stream": supports_streaming,
         });

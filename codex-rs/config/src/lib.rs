@@ -189,6 +189,7 @@ pub use model_spec::ResolvedModelConfig;
 pub use model_spec::TuiModelEntry;
 pub use model_spec::build_tui_model_catalog;
 pub use model_spec::next_variant_for_model;
+pub use model_spec::next_variant_for_model_and_effort;
 pub use model_spec::resolve_effective_model;
 pub use overrides::build_cli_overrides_layer;
 pub use path_context::ConfigPathContext;

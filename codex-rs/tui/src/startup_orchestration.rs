@@ -530,15 +530,8 @@ pub(super) async fn run_main_inner(
                 let result = codex_app_server_daemon::start_with_features(&daemon_features).await;
                 daemon_telemetry::record_start(&config, &result).await;
                 match result {
-                    Ok(output) => Ok(Some(output)),
-                    #[cfg(windows)]
-                    Err(err) if err.is::<codex_app_server_daemon::DetachedLaunchRestricted>() => {
-                        Ok(None)
-                    }
-                    Err(err) => Err(std::io::Error::other(format!(
-                        "{err:#}\n{}",
-                        daemon_startup::FAILURE_HINT
-                    ))),
+                    Ok(output) => Ok::<_, std::io::Error>(Some(output)),
+                    Err(_err) => Ok(None),
                 }
             })
             .await??;
@@ -552,7 +545,6 @@ pub(super) async fn run_main_inner(
             };
         } else {
             app_server_target = AppServerTarget::Embedded;
-            daemon_exclusion = Some("this Windows launcher");
         }
     }
     // The overview must inspect the shared server's agents regardless of local settings.

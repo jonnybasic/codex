@@ -222,6 +222,10 @@ pub struct ConfigToml {
     /// Sandbox mode to use.
     pub sandbox_mode: Option<SandboxMode>,
 
+    /// Legacy compatibility flag for disabling server-side response storage.
+    #[serde(default)]
+    pub disable_response_storage: Option<bool>,
+
     /// Allow macOS sandbox writable roots at or beneath CODEX_HOME to traverse
     /// symlinks. Read only from the host's user config at startup; defaults to false.
     /// This grants no write access by itself, but trusts symlink targets even if

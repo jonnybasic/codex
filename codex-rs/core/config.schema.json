@@ -696,6 +696,10 @@
         "chatgpt_base_url": {
           "type": "string"
         },
+        "disable_response_storage": {
+          "default": null,
+          "type": "boolean"
+        },
         "experimental_compact_prompt_file": {
           "$ref": "#/definitions/AbsolutePathBuf"
         },
@@ -2667,6 +2671,11 @@
           "description": "Environment variable that stores the user's API key for this provider.",
           "type": "string"
         },
+        "env_key_header": {
+          "default": null,
+          "description": "Custom header name for API key injection (e.g. \"x-access-tokens\" for AskSage). When None, uses standard `Authorization: Bearer <key>`.",
+          "type": "string"
+        },
         "env_key_instructions": {
           "description": "Optional instructions to help the user get a valid value for the variable and set it.",
           "type": "string"
@@ -2734,6 +2743,11 @@
           "description": "Whether this provider supports the standalone web-search endpoint.",
           "type": "boolean"
         },
+        "supports_streaming": {
+          "default": true,
+          "description": "Set to false for models/gateways that require synchronous JSON instead of SSE.",
+          "type": "boolean"
+        },
         "supports_websockets": {
           "default": false,
           "description": "Whether this provider supports the Responses API WebSocket transport.",
@@ -2753,6 +2767,156 @@
           ],
           "default": "responses",
           "description": "Which wire protocol this provider expects."
+        }
+      },
+      "type": "object"
+    },
+    "ModelSpec": {
+      "additionalProperties": false,
+      "description": "OpenCode-compatible model specification.",
+      "properties": {
+        "context_window": {
+          "default": null,
+          "description": "Size of the context window in tokens (e.g. 1000000 for 1M).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "extra_body": {
+          "additionalProperties": true,
+          "default": null,
+          "description": "Optional extra JSON body fields for inference requests.",
+          "type": "object"
+        },
+        "http_headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": null,
+          "description": "Additional HTTP headers to send with inference requests.",
+          "type": "object"
+        },
+        "max_input_tokens": {
+          "default": null,
+          "description": "Maximum input tokens supported by the model.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "max_output_tokens": {
+          "default": null,
+          "description": "Maximum output tokens supported by the model.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "model": {
+          "default": null,
+          "description": "Upstream wire model name sent to the provider. Defaults to the table key if omitted.",
+          "type": "string"
+        },
+        "name": {
+          "default": null,
+          "description": "Optional human-friendly display name for the model.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider ID key in `model_providers`",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "default": null,
+          "description": "Reasoning effort level (e.g. \"low\", \"medium\", \"high\").",
+          "type": "string"
+        },
+        "supports_streaming": {
+          "default": null,
+          "description": "Whether the model supports streaming SSE. Defaults to true.",
+          "type": "boolean"
+        },
+        "variants": {
+          "additionalProperties": {
+            "$ref": "#/definitions/ModelVariant"
+          },
+          "default": {},
+          "description": "Variants of this model (e.g. [models.\"gemini-2.5-pro\".variants.high]).",
+          "type": "object"
+        },
+        "wire_api": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WireApi"
+            }
+          ],
+          "default": null,
+          "description": "Wire protocol (WireApi::Responses or WireApi::Chat)."
+        }
+      },
+      "required": [
+        "provider"
+      ],
+      "type": "object"
+    },
+    "ModelVariant": {
+      "additionalProperties": false,
+      "description": "A variant configuration for a specific model.",
+      "properties": {
+        "extra_body": {
+          "additionalProperties": true,
+          "default": null,
+          "description": "Optional extra JSON body fields for this variant.",
+          "type": "object"
+        },
+        "http_headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": null,
+          "description": "Additional HTTP headers for this variant.",
+          "type": "object"
+        },
+        "max_input_tokens": {
+          "default": null,
+          "description": "Maximum input tokens override for this variant.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "max_output_tokens": {
+          "default": null,
+          "description": "Maximum output tokens override for this variant.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "model": {
+          "default": null,
+          "description": "Upstream wire model override for this variant.",
+          "type": "string"
+        },
+        "name": {
+          "default": null,
+          "description": "Optional human-friendly display name for this variant.",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "default": null,
+          "description": "Reasoning effort override for this variant.",
+          "type": "string"
+        },
+        "supports_streaming": {
+          "default": null,
+          "description": "Streaming override for this variant.",
+          "type": "boolean"
+        },
+        "wire_api": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WireApi"
+            }
+          ],
+          "default": null,
+          "description": "Wire protocol override for this variant."
         }
       },
       "type": "object"
@@ -6555,9 +6719,16 @@
       "description": "Wire protocol that the provider speaks.",
       "oneOf": [
         {
-          "description": "The Responses API exposed by OpenAI at `/v1/responses`.",
+          "description": "The Responses API exposed at `/v1/responses`.",
           "enum": [
             "responses"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The standard Chat Completions API exposed at `/chat/completions`.",
+          "enum": [
+            "chat"
           ],
           "type": "string"
         }
@@ -6698,6 +6869,11 @@
     },
     "disable_paste_burst": {
       "description": "Legacy fallback for `tui.disable_paste_burst`. Prefer the setting under `[tui]`.",
+      "type": "boolean"
+    },
+    "disable_response_storage": {
+      "default": null,
+      "description": "Legacy compatibility flag for disabling server-side response storage.",
       "type": "boolean"
     },
     "experimental_compact_prompt_file": {
@@ -7483,6 +7659,14 @@
         }
       ],
       "description": "Optional verbosity control for GPT-5 models (Responses API `text.verbosity`)."
+    },
+    "models": {
+      "additionalProperties": {
+        "$ref": "#/definitions/ModelSpec"
+      },
+      "default": {},
+      "description": "OpenCode-compatible model specifications and variant catalog.",
+      "type": "object"
     },
     "notice": {
       "allOf": [

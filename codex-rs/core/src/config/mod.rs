@@ -3836,15 +3836,48 @@ impl Config {
             merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
 
+        let mut model = model.or(cfg.model);
+        let mut model_context_window = cfg.model_context_window;
+        let mut model_reasoning_effort = cfg.model_reasoning_effort;
+        let mut resolved_startup_model = None;
+        if !cfg.models.is_empty() {
+            if model.is_none() {
+                model = cfg.models.keys().next().cloned();
+            }
+            if let Some(raw_model) = model.as_deref() {
+                let base = raw_model.split(':').next().unwrap_or(raw_model);
+                if cfg.models.contains_key(base) {
+                    let resolved = codex_config::resolve_effective_model(&cfg.models, raw_model);
+                    model = Some(resolved.wire_model.clone());
+                    if model_context_window.is_none()
+                        && let Some(cw) =
+                            resolved.context_window.and_then(|cw| i64::try_from(cw).ok())
+                    {
+                        model_context_window = Some(cw);
+                    }
+                    if model_reasoning_effort.is_none()
+                        && let Some(eff) = resolved
+                            .reasoning_effort
+                            .as_deref()
+                            .and_then(|s| s.parse::<ReasoningEffort>().ok())
+                    {
+                        model_reasoning_effort = Some(eff);
+                    }
+                    resolved_startup_model = Some(resolved);
+                }
+            }
+        }
+
         let explicit_provider_id = config_layer_stack
             .required_model_provider()
             .map(str::to_string)
             .or(model_provider)
+            .or_else(|| resolved_startup_model.as_ref().map(|r| r.provider.clone()))
             .or(cfg.model_provider);
         let model_provider_id = explicit_provider_id
             .clone()
             .unwrap_or_else(|| "openai".to_string());
-        let model_provider = match model_providers.get(&model_provider_id) {
+        let mut model_provider = match model_providers.get(&model_provider_id) {
             Some(provider) => provider.clone(),
             None if explicit_provider_id.is_none() || model_provider_id == "openai" => {
                 create_oss_provider_with_base_url("http://127.0.0.1:8080/v1", WireApi::Responses)
@@ -3858,6 +3891,19 @@ impl Config {
                 return Err(std::io::Error::new(std::io::ErrorKind::NotFound, message));
             }
         };
+        if let Some(ref resolved) = resolved_startup_model {
+            model_provider.wire_api = resolved.wire_api;
+            model_provider.supports_streaming = resolved.supports_streaming;
+            if !resolved.http_headers.is_empty() {
+                let headers = model_provider.http_headers.get_or_insert_with(HashMap::new);
+                headers.extend(
+                    resolved
+                        .http_headers
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone().into())),
+                );
+            }
+        }
 
         let shell_environment_policy = ShellEnvironmentPolicy::from(cfg.shell_environment_policy);
         let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);
@@ -3990,7 +4036,6 @@ impl Config {
 
         let forced_login_method = cfg.forced_login_method;
 
-        let model = model.or(cfg.model);
         let notices = cfg.notice.unwrap_or_default();
         let service_tier = match service_tier_override {
             Some(Some(service_tier)) => Some(service_tier),
@@ -4101,7 +4146,11 @@ impl Config {
         let review_model = override_review_model.or(cfg.review_model);
 
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(false);
-        let model_catalog = load_model_catalog(cfg.model_catalog_json.clone())?;
+        let model_catalog = match load_model_catalog(cfg.model_catalog_json.clone())? {
+            Some(catalog) => Some(catalog),
+            None if !cfg.models.is_empty() => Some(build_models_response_from_specs(&cfg.models)),
+            None => None,
+        };
 
         let log_dir = cfg
             .log_dir
@@ -4307,7 +4356,7 @@ impl Config {
             model,
             service_tier,
             review_model,
-            model_context_window: cfg.model_context_window,
+            model_context_window,
             model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
             model_auto_compact_token_limit_scope: cfg
                 .model_auto_compact_token_limit_scope
@@ -4443,7 +4492,7 @@ impl Config {
                 .as_ref()
                 .and_then(|auto_review| auto_review.circuit_break_action)
                 .unwrap_or_default(),
-            model_reasoning_effort: cfg.model_reasoning_effort,
+            model_reasoning_effort,
             plan_mode_reasoning_effort: cfg.plan_mode_reasoning_effort,
             model_reasoning_summary: cfg.model_reasoning_summary,
             model_catalog,
@@ -4956,6 +5005,55 @@ fn normalize_guardian_policy_config(value: Option<&str>) -> Option<String> {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     })
+}
+
+fn build_models_response_from_specs(specs: &BTreeMap<String, ModelSpec>) -> ModelsResponse {
+    use codex_models_manager::model_info::configured_model_info;
+    use codex_protocol::openai_models::ModelVisibility;
+
+    let tui_entries = codex_config::build_tui_model_catalog(specs);
+    let mut models = Vec::with_capacity(tui_entries.len());
+    for (idx, entry) in tui_entries.into_iter().enumerate() {
+        let effort = entry
+            .reasoning_effort
+            .as_deref()
+            .and_then(|s| s.parse::<ReasoningEffort>().ok());
+        let cw = entry.context_window.and_then(|c| i64::try_from(c).ok());
+        let priority = i32::try_from(idx).unwrap_or(99);
+        models.push(configured_model_info(
+            entry.id,
+            entry.display_label,
+            Some(format!("Provider: {}", entry.provider)),
+            effort,
+            cw,
+            ModelVisibility::List,
+            priority,
+        ));
+    }
+
+    for (key, spec) in specs {
+        if let Some(wire) = spec.model.as_deref()
+            && wire != key
+            && !models.iter().any(|m| m.slug == wire)
+        {
+            let effort = spec
+                .reasoning_effort
+                .as_deref()
+                .and_then(|s| s.parse::<ReasoningEffort>().ok());
+            let cw = spec.context_window.and_then(|c| i64::try_from(c).ok());
+            models.push(configured_model_info(
+                wire.to_string(),
+                wire.to_string(),
+                Some(format!("Provider: {}", spec.provider)),
+                effort,
+                cw,
+                ModelVisibility::Hide,
+                /*priority*/ 999,
+            ));
+        }
+    }
+
+    ModelsResponse { models }
 }
 
 /// Returns the path to the Codex configuration directory, which can be

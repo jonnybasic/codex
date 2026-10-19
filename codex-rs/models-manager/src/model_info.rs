@@ -95,19 +95,27 @@ fn is_h1_heading(line: &str) -> bool {
     rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t')
 }
 
-/// Build a minimal fallback model descriptor for missing/unknown slugs.
-pub fn model_info_from_slug(slug: &str) -> ModelInfo {
-    warn!("Unknown model {slug} is used. This will use fallback model metadata.");
+/// Build a model descriptor for a user-configured `[models]` catalog entry.
+pub fn configured_model_info(
+    slug: String,
+    display_name: String,
+    description: Option<String>,
+    default_reasoning_level: Option<codex_protocol::openai_models::ReasoningEffort>,
+    context_window: Option<i64>,
+    visibility: ModelVisibility,
+    priority: i32,
+) -> ModelInfo {
+    let cw = context_window.or(Some(272_000));
     ModelInfo {
-        slug: slug.to_string(),
-        display_name: slug.to_string(),
-        description: None,
-        default_reasoning_level: None,
+        slug,
+        display_name,
+        description,
+        default_reasoning_level,
         supported_reasoning_levels: Vec::new(),
         shell_type: ConfigShellToolType::UnifiedExec,
-        visibility: ModelVisibility::None,
+        visibility,
         supported_in_api: true,
-        priority: 99,
+        priority,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
         default_service_tier: None,
@@ -126,14 +134,14 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         web_search_tool_type: WebSearchToolType::Text,
         truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
         supports_image_detail_original: false,
-        context_window: Some(272_000),
-        max_context_window: Some(272_000),
+        context_window: cw,
+        max_context_window: cw,
         auto_compact_token_limit: None,
         comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
         input_modalities: default_input_modalities(),
-        used_fallback_model_metadata: true, // this is the fallback model metadata
+        used_fallback_model_metadata: false,
         supports_search_tool: false,
         supports_experimental_context: false,
         use_responses_lite: false,
@@ -147,6 +155,22 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
     }
+}
+
+/// Build a minimal fallback model descriptor for missing/unknown slugs.
+pub fn model_info_from_slug(slug: &str) -> ModelInfo {
+    warn!("Unknown model {slug} is used. This will use fallback model metadata.");
+    let mut info = configured_model_info(
+        slug.to_string(),
+        slug.to_string(),
+        /*description*/ None,
+        /*default_reasoning_level*/ None,
+        /*context_window*/ Some(272_000),
+        ModelVisibility::None,
+        /*priority*/ 99,
+    );
+    info.used_fallback_model_metadata = true;
+    info
 }
 
 fn local_model_messages() -> ModelMessages {
