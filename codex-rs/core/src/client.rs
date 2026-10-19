@@ -32,6 +32,8 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+#[path = "client_chat.rs"]
+mod client_chat;
 #[path = "client_tool_metadata.rs"]
 mod tool_metadata;
 
@@ -2265,9 +2267,10 @@ impl ModelClientSession {
                 )
                 .await
             }
-            WireApi::Chat => Err(CodexErr::Fatal(
-                "WireApi::Chat streaming engine will be implemented in Phase 4.".to_string(),
-            )),
+            WireApi::Chat => {
+                self.stream_chat_completions(prompt, model_info, effort)
+                    .await
+            }
         }
     }
 
