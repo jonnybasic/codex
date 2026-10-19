@@ -195,6 +195,8 @@ fn model_provider_from_proto(
         supports_websockets: provider.supports_websockets,
         supports_standalone_web_search: provider.supports_standalone_web_search,
         include_internal_metadata: false,
+        env_key_header: None,
+        supports_streaming: true,
     };
     Ok((id, info))
 }
@@ -226,6 +228,8 @@ fn model_provider_to_proto(
         supports_websockets,
         supports_standalone_web_search,
         include_internal_metadata: _,
+        env_key_header: _,
+        supports_streaming: _,
     } = provider;
 
     proto::ModelProvider {
@@ -312,6 +316,7 @@ fn proto_string_map(values: HashMap<String, RedactedString>) -> proto::StringMap
 fn proto_wire_api(wire_api: WireApi) -> proto::WireApi {
     match wire_api {
         WireApi::Responses => proto::WireApi::Responses,
+        WireApi::Chat => proto::WireApi::Unspecified,
     }
 }
 
@@ -582,6 +587,8 @@ mod tests {
             gateway_oauth: None,
             aws: None,
             include_internal_metadata: false,
+            env_key_header: None,
+            supports_streaming: true,
         }
     }
 

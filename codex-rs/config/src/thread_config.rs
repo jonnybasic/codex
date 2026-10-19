@@ -282,6 +282,7 @@ mod tests {
                     name = "local"
                     base_url = "http://127.0.0.1:8061/api/codex"
                     wire_api = "responses"
+                    supports_streaming = true
                     requires_openai_auth = false
                     supports_websockets = true
                     supports_standalone_web_search = true
@@ -317,6 +318,8 @@ mod tests {
             supports_websockets: true,
             supports_standalone_web_search: true,
             include_internal_metadata: false,
+            env_key_header: None,
+            supports_streaming: true,
         }
     }
 }

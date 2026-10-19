@@ -94,7 +94,8 @@ pub const AMAZON_BEDROCK_DEFAULT_BASE_URL: &str =
     "https://bedrock-mantle.us-east-1.api.aws/openai/v1";
 const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER: &str = "x-amzn-mantle-client-agent";
 const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE: &str = "codex";
-const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
+#[allow(dead_code)]
+pub const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
 pub const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 
@@ -102,15 +103,18 @@ pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum WireApi {
-    /// The Responses API exposed by OpenAI at `/v1/responses`.
+    /// The Responses API exposed at `/v1/responses`.
     #[default]
     Responses,
+    /// The standard Chat Completions API exposed at `/chat/completions`.
+    Chat,
 }
 
 impl fmt::Display for WireApi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
             Self::Responses => "responses",
+            Self::Chat => "chat",
         };
         f.write_str(value)
     }
@@ -124,14 +128,21 @@ impl<'de> Deserialize<'de> for WireApi {
         let value = String::deserialize(deserializer)?;
         match value.as_str() {
             "responses" => Ok(Self::Responses),
-            "chat" => Err(serde::de::Error::custom(CHAT_WIRE_API_REMOVED_ERROR)),
-            _ => Err(serde::de::Error::unknown_variant(&value, &["responses"])),
+            "chat" => Ok(Self::Chat),
+            _ => Err(serde::de::Error::unknown_variant(
+                &value,
+                &["responses", "chat"],
+            )),
         }
     }
 }
 
+pub const fn default_supports_streaming() -> bool {
+    true
+}
+
 /// Serializable representation of a provider definition.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ModelProviderInfo {
     /// Friendly display name.
@@ -144,6 +155,10 @@ pub struct ModelProviderInfo {
     pub model_catalog_url: Option<RedactedString>,
     /// Environment variable that stores the user's API key for this provider.
     pub env_key: Option<String>,
+    /// Custom header name for API key injection (e.g. "x-access-tokens" for AskSage).
+    /// When None, uses standard `Authorization: Bearer <key>`.
+    #[serde(default)]
+    pub env_key_header: Option<String>,
 
     /// Optional instructions to help the user get a valid value for the
     /// variable and set it.
@@ -161,6 +176,9 @@ pub struct ModelProviderInfo {
     /// Which wire protocol this provider expects.
     #[serde(default)]
     pub wire_api: WireApi,
+    /// Set to false for models/gateways that require synchronous JSON instead of SSE.
+    #[serde(default = "default_supports_streaming")]
+    pub supports_streaming: bool,
     /// Optional query parameters to append to the base URL.
     pub query_params: Option<HashMap<String, RedactedString>>,
     /// Additional HTTP headers to include in requests to this provider where
@@ -199,6 +217,36 @@ pub struct ModelProviderInfo {
     #[serde(skip)]
     #[schemars(skip)]
     pub include_internal_metadata: bool,
+}
+
+impl Default for ModelProviderInfo {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            base_url: None,
+            model_catalog_url: None,
+            env_key: None,
+            env_key_header: None,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            auth: None,
+            gateway_oauth: None,
+            aws: None,
+            wire_api: WireApi::default(),
+            supports_streaming: default_supports_streaming(),
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+            supports_standalone_web_search: false,
+            include_internal_metadata: false,
+        }
+    }
 }
 
 /// AWS SigV4 auth configuration for a model provider.
@@ -390,7 +438,8 @@ other non-default provider fields are not supported"
 
     fn build_header_map(&self) -> CodexResult<HeaderMap> {
         let capacity = self.http_headers.as_ref().map_or(0, HashMap::len)
-            + self.env_http_headers.as_ref().map_or(0, HashMap::len);
+            + self.env_http_headers.as_ref().map_or(0, HashMap::len)
+            + usize::from(self.env_key_header.is_some());
         let mut headers = HeaderMap::with_capacity(capacity);
         if let Some(extra) = &self.http_headers {
             for (k, v) in extra {
@@ -414,25 +463,22 @@ other non-default provider fields are not supported"
             }
         }
 
+        if let (Some(header), Some(env_var)) = (&self.env_key_header, &self.env_key) {
+            if let Ok(val) = std::env::var(env_var)
+                && !val.trim().is_empty()
+                && let (Ok(name), Ok(value)) =
+                    (HeaderName::try_from(header), HeaderValue::try_from(val))
+            {
+                headers.insert(name, value);
+            }
+        }
+
         Ok(headers)
     }
 
     /// Builds an API provider with managed residency taking precedence over configured headers.
-    pub fn to_api_provider(&self, auth_mode: Option<AuthMode>) -> CodexResult<ApiProvider> {
-        let default_base_url = if matches!(
-            auth_mode,
-            Some(
-                AuthMode::Chatgpt
-                    | AuthMode::ChatgptAuthTokens
-                    | AuthMode::Headers
-                    | AuthMode::AgentIdentity
-                    | AuthMode::PersonalAccessToken
-            )
-        ) {
-            CHATGPT_CODEX_BASE_URL
-        } else {
-            "https://api.openai.com/v1"
-        };
+    pub fn to_api_provider(&self, _auth_mode: Option<AuthMode>) -> CodexResult<ApiProvider> {
+        let default_base_url = "http://127.0.0.1:8080/v1";
         let base_url = self
             .base_url
             .clone()
@@ -489,6 +535,14 @@ other non-default provider fields are not supported"
         }
     }
 
+    /// Resolves an API key for a provider, allowing unauthenticated local connections (llama.cpp / vLLM).
+    pub fn resolve_api_key(provider: &ModelProviderInfo) -> CodexResult<Option<String>> {
+        match &provider.env_key {
+            Some(env_var) if !env_var.trim().is_empty() => Ok(std::env::var(env_var).ok()),
+            _ => Ok(None),
+        }
+    }
+
     /// Effective maximum number of request retries for this provider.
     pub fn request_max_retries(&self) -> u64 {
         self.request_max_retries
@@ -523,12 +577,14 @@ other non-default provider fields are not supported"
             base_url,
             model_catalog_url: None,
             env_key: None,
+            env_key_header: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
             auth: None,
             gateway_oauth: None,
             aws: None,
             wire_api: WireApi::Responses,
+            supports_streaming: true,
             query_params: None,
             http_headers: Some(
                 [("version".to_string(), env!("CARGO_PKG_VERSION").into())]
@@ -569,6 +625,7 @@ other non-default provider fields are not supported"
             base_url: None,
             model_catalog_url: None,
             env_key: None,
+            env_key_header: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
             auth: None,
@@ -580,6 +637,7 @@ other non-default provider fields are not supported"
                 auth_refresh: None,
             })),
             wire_api: WireApi::Responses,
+            supports_streaming: true,
             query_params: None,
             http_headers: Some(HashMap::from([(
                 AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER.to_string(),
@@ -650,44 +708,14 @@ pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
 
 /// Built-in default provider list.
 pub fn built_in_model_providers(
-    openai_base_url: Option<String>,
+    _openai_base_url: Option<String>,
 ) -> HashMap<String, ModelProviderInfo> {
-    use ModelProviderInfo as P;
-    let openai_provider = P::create_openai_provider(openai_base_url);
-    let amazon_bedrock_provider = P::create_amazon_bedrock_provider(/*aws*/ None);
-    let amazon_bedrock_runtime_provider =
-        P::create_amazon_bedrock_runtime_provider(/*aws*/ None);
-
-    // We do not want to be in the business of adjucating which third-party
-    // providers are bundled with Codex CLI, so we only include the OpenAI and
-    // open source ("oss") providers by default. Users are encouraged to add to
-    // `model_providers` in config.toml to add their own providers.
-    [
-        (OPENAI_PROVIDER_ID, openai_provider),
-        (AMAZON_BEDROCK_PROVIDER_ID, amazon_bedrock_provider),
-        (
-            AMAZON_BEDROCK_RUNTIME_PROVIDER_ID,
-            amazon_bedrock_runtime_provider,
-        ),
-        (
-            OLLAMA_OSS_PROVIDER_ID,
-            create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses),
-        ),
-        (
-            LMSTUDIO_OSS_PROVIDER_ID,
-            create_oss_provider(DEFAULT_LMSTUDIO_PORT, WireApi::Responses),
-        ),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v))
-    .collect()
+    HashMap::new()
 }
 
 /// Merge configured providers into the built-in provider catalog.
 ///
-/// Configured providers extend the built-in set. Built-in providers are not
-/// generally overridable, but built-in Amazon Bedrock providers allow the user
-/// to customize their endpoint, authentication, headers, and AWS settings.
+/// Configured providers extend or populate the provider set.
 pub fn merge_configured_model_providers(
     mut model_providers: HashMap<String, ModelProviderInfo>,
     configured_model_providers: HashMap<String, ModelProviderInfo>,
@@ -716,9 +744,11 @@ pub fn merge_configured_model_providers(
                         .get_or_insert_default()
                         .extend(http_headers_override);
                 }
+            } else {
+                model_providers.insert(key, provider);
             }
         } else {
-            model_providers.entry(key).or_insert(provider);
+            model_providers.insert(key, provider);
         }
     }
 
@@ -750,12 +780,14 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         base_url: Some(base_url.into()),
         model_catalog_url: None,
         env_key: None,
+        env_key_header: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
         gateway_oauth: None,
         aws: None,
         wire_api,
+        supports_streaming: true,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
